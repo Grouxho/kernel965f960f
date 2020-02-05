@@ -7,7 +7,7 @@
 # -----
 export ARCH=arm64
 export SUBARCH=arm64
-export BUILD_CROSS_COMPILE=/home/moro/kernel/toolchains/aarch64-linux-android-4.9/bin/aarch64-linux-android-
+export BUILD_CROSS_COMPILE=/home/grouxho/kernel/toolchains/aarch64-linux-android-4.9/bin/aarch64-linux-android-
 export CROSS_COMPILE=$BUILD_CROSS_COMPILE
 export BUILD_JOB_NUMBER=`grep processor /proc/cpuinfo|wc -l`
 
@@ -28,9 +28,9 @@ DEFCONFIG=general_defconfig
 DEFCONFIG_S9PLUS=965_defconfig
 DEFCONFIG_S9=960_defconfig
 
-export K_VERSION="v2"
+export K_VERSION="v1"
 export K_BASE="DTAA"
-export K_NAME="MoRoKernel-S9"
+export K_NAME="GrxKernel-S9"
 export KBUILD_BUILD_VERSION="1"
 export KERNEL_VERSION="$K_NAME-$K_BASE-Q-$K_VERSION"
 
