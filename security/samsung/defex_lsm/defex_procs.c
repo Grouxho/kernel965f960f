@@ -309,7 +309,7 @@ static int at_same_group_gid(unsigned int gid1, unsigned int gid2)
 
 #ifdef DEFEX_LP_ENABLE
 /* Lower Permission feature decision function */
-static int lower_adb_permission(struct task_struct *p, unsigned short cred_flags)
+static int lower_adb_permission(struct task_struct *p, unsigned int p_root)
 {
 	char *parent_file;
 	struct task_struct *parent = NULL;
@@ -358,7 +358,7 @@ static int lower_adb_permission(struct task_struct *p, unsigned short cred_flags
 		shellcred->fsgid.val = 2000;
 		commit_creds(shellcred);
 
-		set_task_creds(REF_PID(p), 2000, 2000, 2000, cred_flags);
+		set_task_creds(p->pid, 2000, 2000, 2000, p_root);
 
 		ret = 1;
 	}
@@ -374,9 +374,7 @@ out:
 
 /* Cred. violation feature decision function */
 #define AID_MEDIA_RW	1023
-#define AID_MEDIA_OBB	1059
-#define AID_SYSTEM	1000
-
+#define SECUREFD_MEDIA_RW	0xE4E5BF
 #ifndef DEFEX_DSMS_ENABLE
 static int task_defex_check_creds(struct task_struct *p)
 #else
@@ -388,7 +386,7 @@ static int task_defex_check_creds(struct task_struct *p, int syscall)
 	unsigned int cur_uid, cur_euid, cur_fsuid, cur_egid;
 	unsigned int ref_uid, ref_fsuid, ref_egid;
 	struct task_struct *parent;
-	unsigned short cred_flags;
+	unsigned int p_root;
 #ifndef DEFEX_PED_BASED_ON_TGID_ENABLE
 	unsigned int g_uid, g_fsuid, g_egid;
 #endif /* DEFEX_PED_BASED_ON_TGID_ENABLE */
@@ -397,10 +395,10 @@ static int task_defex_check_creds(struct task_struct *p, int syscall)
 	if (!is_task_creds_ready() || !p->cred)
 		goto out;
 
-	get_task_creds(REF_PID(p), &ref_uid, &ref_fsuid, &ref_egid, &cred_flags);
+	get_task_creds(REF_PID(p), &ref_uid, &ref_fsuid, &ref_egid, &p_root);
 #ifndef DEFEX_PED_BASED_ON_TGID_ENABLE
 	if (p->tgid != p->pid) {
-		get_task_creds(p->tgid, &g_uid, &g_fsuid, &g_egid, &cred_flags);
+		get_task_creds(p->tgid, &g_uid, &g_fsuid, &g_egid, &p_root);
 	} else {
 		g_uid = ref_uid;
 		g_fsuid = ref_fsuid;
@@ -430,25 +428,28 @@ static int task_defex_check_creds(struct task_struct *p, int syscall)
 			get_task_struct(parent);
 		read_unlock(&tasklist_lock);
 		if (parent) {
-			if (CHECK_ROOT_CREDS(parent))
-				cred_flags |= CRED_FLAGS_PROOT;
-
+			p_root = CHECK_ROOT_CREDS(parent);
 			put_task_struct(parent);
 		}
 
 		if (CHECK_ROOT_CREDS(p)) {
 #ifdef DEFEX_LP_ENABLE
-			if (!lower_adb_permission(p, cred_flags))
+			if (!lower_adb_permission(p, p_root))
 #endif /* DEFEX_LP_ENABLE */
 			{
-				set_task_creds(REF_PID(p), 1, 1, 1, cred_flags);
+				set_task_creds(REF_PID(p), 1, 1, 1, p_root);
 			}
 		}
 		else
-			set_task_creds(REF_PID(p), cur_euid, cur_fsuid, cur_egid, cred_flags);
+			set_task_creds(REF_PID(p), cur_euid, cur_fsuid, cur_egid, p_root);
 	} else if (ref_uid == 1) {
-		if (!CHECK_ROOT_CREDS(p))
-			set_task_creds(REF_PID(p), cur_euid, cur_fsuid, cur_egid, cred_flags);
+		if (!CHECK_ROOT_CREDS(p)
+#ifdef DEFEX_PED_BASED_ON_TGID_ENABLE
+			&& (p->tgid == p->pid)
+#endif /* DEFEX_PED_BASED_ON_TGID_ENABLE */
+			) {
+			set_task_creds(REF_PID(p), cur_euid, cur_fsuid, cur_egid, p_root);
+		}
 	} else if (ref_uid == dead_uid
 #ifndef DEFEX_PED_BASED_ON_TGID_ENABLE
 		|| g_uid == dead_uid
@@ -463,38 +464,25 @@ static int task_defex_check_creds(struct task_struct *p, int syscall)
 	} else {
 		check_deeper = 0;
 		/* temporary allow fsuid changes to "media_rw" */
-		if ( (cur_uid != ref_uid) ||
-				(cur_euid != ref_uid) ||
-	 			(cur_egid != ref_egid) ||
-	  			!((cur_fsuid == ref_fsuid) ||
-	  			 (cur_fsuid == ref_uid) ||
-	  			 (cur_fsuid%100000 == AID_SYSTEM) ||
-	  			 (cur_fsuid%100000 == AID_MEDIA_RW) ||
-	  			 (cur_fsuid%100000 == AID_MEDIA_OBB)) ) {
+		if ((cur_uid != ref_uid) || (cur_euid != ref_uid) || !((cur_fsuid == ref_fsuid) || (cur_fsuid == ref_uid) || (cur_fsuid == AID_MEDIA_RW) || (cur_fsuid == SECUREFD_MEDIA_RW)) || (cur_egid != ref_egid)) {
 			check_deeper = 1;
-			if (CHECK_ROOT_CREDS(p))
-				set_task_creds(REF_PID(p), 1, 1, 1, cred_flags);
-			else
-				set_task_creds(REF_PID(p), cur_euid, cur_fsuid, cur_egid, cred_flags);
+#ifdef DEFEX_PED_BASED_ON_TGID_ENABLE
+			if (p->tgid == p->pid)
+#endif /* DEFEX_PED_BASED_ON_TGID_ENABLE */
+				set_task_creds(REF_PID(p), cur_euid, cur_fsuid, cur_egid, p_root);
 		}
-		if (check_deeper &&
-				(!at_same_group(cur_uid, ref_uid) ||
+		if (check_deeper && (!at_same_group(cur_uid, ref_uid) ||
 				!at_same_group(cur_euid, ref_uid) ||
 				!at_same_group_gid(cur_egid, ref_egid) ||
 				!at_same_group(cur_fsuid, ref_fsuid)) &&
 				task_defex_is_secured(p)) {
-#ifdef DEFEX_PED_BASED_ON_TGID_ENABLE
-			case_num = ((p->tgid == p->pid) ? 1 : 2);
-#else
 			case_num = 1;
-#endif /* DEFEX_PED_BASED_ON_TGID_ENABLE */
 			goto trigger_violation;
 		}
 
 #ifndef DEFEX_PED_BASED_ON_TGID_ENABLE
 		if (p->tgid != p->pid) {
-			if ((g_uid > 1) &&
-					(!at_same_group(cur_uid, g_uid) ||
+			if ((g_uid > 1) && (!at_same_group(cur_uid, g_uid) ||
 					!at_same_group(cur_euid, g_uid) ||
 					!at_same_group_gid(cur_egid, g_egid)) &&
 					task_defex_is_secured(p)) {
@@ -505,15 +493,13 @@ static int task_defex_check_creds(struct task_struct *p, int syscall)
 #endif /* DEFEX_PED_BASED_ON_TGID_ENABLE */
 	}
 
-	if (CHECK_ROOT_CREDS(p) && !(cred_flags & CRED_FLAGS_PROOT) && task_defex_is_secured(p)) {
-		if ((p->tgid != p->pid)
+	if (CHECK_ROOT_CREDS(p) && !p_root && task_defex_is_secured(p)) {
 #ifndef DEFEX_PED_BASED_ON_TGID_ENABLE
-			&& (g_uid > 1)
-#endif /* DEFEX_PED_BASED_ON_TGID_ENABLE */
-			) {
+		if ((p->tgid != p->pid) && (g_uid > 1)) {
 			case_num = 3;
 			goto trigger_violation;
 		}
+#endif /* DEFEX_PED_BASED_ON_TGID_ENABLE */
 		case_num = 4;
 		goto trigger_violation;
 	}
@@ -522,10 +508,10 @@ out:
 	return DEFEX_ALLOW;
 
 trigger_violation:
-	set_task_creds(REF_PID(p), dead_uid, dead_uid, dead_uid, cred_flags);
+	set_task_creds(REF_PID(p), dead_uid, dead_uid, dead_uid, p_root);
 #ifndef DEFEX_PED_BASED_ON_TGID_ENABLE
 	if (p->tgid != p->pid)
-		set_task_creds(p->tgid, dead_uid, dead_uid, dead_uid, cred_flags);
+		set_task_creds(p->tgid, dead_uid, dead_uid, dead_uid, p_root);
 #endif /* DEFEX_PED_BASED_ON_TGID_ENABLE */
 	path = defex_get_filename(p);
 	pr_crit("defex[%d]: credential violation [task=%s, filename=%s, uid=%d, tgid=%u, pid=%u, ppid=%u]\n",
